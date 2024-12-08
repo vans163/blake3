@@ -72,6 +72,11 @@ defmodule Blake3 do
     Native.finalize(state)
   end
 
+  @spec finalize_xof(state :: hasher(), size :: integer()) :: binary()
+  def finalize_xof(state, size) do
+    Native.finalize_xof(state, size)
+  end
+
   @doc """
   returns a 32 byte key for use for `hash_keyed` or `new_keyed` from
   the given context and key. for more information: [crate](https://github.com/BLAKE3-team/BLAKE3#the-blake3-crate-)

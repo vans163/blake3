@@ -12,6 +12,7 @@ defmodule Blake3.Native do
   def update(_state, _str), do: error()
   def update_rayon(_state, _str), do: error()
   def finalize(_state), do: error()
+  def finalize_xof(_state, _size), do: error()
   def derive_key(_context, _key), do: error()
   def keyed_hash(_key, _str), do: error()
   def new_keyed(_key), do: error()

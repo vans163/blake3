@@ -18,6 +18,7 @@ rustler::init!(
         new,
         update,
         finalize,
+        finalize_xof,
         derive_key,
         keyed_hash,
         new_keyed,
@@ -74,6 +75,20 @@ fn finalize<'a>(env: Env<'a>, resource: ResourceArc<HasherResource>) -> NifResul
     let mut bin =
         types::OwnedBinary::new(hash_bytes.len()).ok_or(Error::Term(Box::new("no mem")))?;
     let _ = bin.as_mut_slice().write(hash_bytes);
+
+    Ok(bin.release(env))
+}
+
+#[rustler::nif]
+fn finalize_xof<'a>(env: Env<'a>, resource: ResourceArc<HasherResource>, output_size: usize) -> NifResult<Binary<'a>> {
+	let hasher = resource.0.try_lock().unwrap();
+    let mut output = vec![0u8; output_size];
+    let mut output_reader = hasher.finalize_xof();
+    output_reader.fill(&mut output);
+
+    let mut bin =
+        types::OwnedBinary::new(output.len()).ok_or(Error::Term(Box::new("no mem")))?;
+    let _ = bin.as_mut_slice().write(&output);
 
     Ok(bin.release(env))
 }
