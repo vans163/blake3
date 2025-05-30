@@ -125,7 +125,7 @@ struct AMAMatMul {
     pub A: [[i8; 50240]; 16],
     pub B: [[i8; 16]; 50240],
     pub B2: [[i8; 64]; 16],
-    pub R: [i8; 16],
+    pub Rs: [[i8; 16]; 3],
     pub C: [[i32; 16]; 16],
 }
 
@@ -168,7 +168,7 @@ fn freivalds<'a>(env: Env<'a>, tensor: Binary) -> bool {
         A: [[0; 50240]; 16],
         B: [[0; 16]; 50240],
         B2: [[0; 64]; 16],
-        R: [0; 16],
+        Rs: [[0; 16]; 3],
         C: [[0; 16]; 16],
     }; 1]);
 
@@ -176,7 +176,7 @@ fn freivalds<'a>(env: Env<'a>, tensor: Binary) -> bool {
     hasher.update(&tensor.as_slice()[..240]);
     let mut xof = hasher.finalize_xof();
     unsafe {
-        let buf = std::slice::from_raw_parts_mut(&mut struct_ama_matmul[0] as *mut _ as *mut u8, 16*50240 + 50240*16 + 16*64 + 16);
+        let buf = std::slice::from_raw_parts_mut(&mut struct_ama_matmul[0] as *mut _ as *mut u8, 16*50240 + 50240*16 + 16*64 + 16*3);
         xof.fill(buf);
     };
 
@@ -188,38 +188,56 @@ fn freivalds<'a>(env: Env<'a>, tensor: Binary) -> bool {
     }
 
     let mat = &struct_ama_matmul[0];
-    freivalds_inner(&mat.R, &mat.A, &mat.B, &mat.C)
+    freivalds_inner(&mat.Rs, &mat.A, &mat.B, &mat.C)
 }
 
-fn freivalds_inner(R: &[i8; 16], A: &[[i8; 50_240]; 16], B: &[[i8; 16]; 50_240], C: &[[i32; 16]; 16]) -> bool {
-    let mut P = [0i32; 50_240];
-    for i in 0..50_240 {
-        let mut sum: i32 = 0;
-        for j in 0..16 {
-            sum += B[i][j] as i32 * R[j] as i32;
+fn freivalds_inner(Rs: &[[i8; 16]; 3], A: &[[i8; 50_240]; 16], B: &[[i8; 16]; 50_240], C: &[[i32; 16]; 16]) -> bool {
+    let mut U = [[0i32; 16]; 3];
+    for r in 0..3 {
+        for i in 0..16 {
+            let mut sum = 0;
+            for j in 0..16 {
+                sum += C[i][j] * Rs[r][j] as i32;
+            }
+            U[r][i] = sum;
         }
-        P[i] = sum;
     }
 
-    let mut V = [0i32; 16];
+    let mut P = [[0i32; 3]; 50_240];
+    for k in 0..50_240 {
+        let row = &B[k];
+        let mut s0 = 0;
+        let mut s1 = 0;
+        let mut s2 = 0;
+        for j in 0..16 {
+            let b = row[j] as i32;
+            s0 += b * Rs[0][j] as i32;
+            s1 += b * Rs[1][j] as i32;
+            s2 += b * Rs[2][j] as i32;
+        }
+        P[k][0] = s0;
+        P[k][1] = s1;
+        P[k][2] = s2;
+    }
+
     for i in 0..16 {
-        let mut sum: i32 = 0;
+        let rowA = &A[i];
+        let mut v0 = 0;
+        let mut v1 = 0;
+        let mut v2 = 0;
         for k in 0..50_240 {
-            sum += A[i][k] as i32 * P[k] as i32;
+            let a = rowA[k] as i32;
+            let p = P[k];
+            v0 += a * p[0];
+            v1 += a * p[1];
+            v2 += a * p[2];
         }
-        V[i] = sum;
+        if v0 != U[0][i] || v1 != U[1][i] || v2 != U[2][i] {
+            return false;
+        }
     }
 
-    let mut U = [0i32; 16];
-    for i in 0..16 {
-        let mut sum: i32 = 0;
-        for j in 0..16 {
-            sum += C[i][j] * R[j] as i32;
-        }
-        U[i] = sum;
-    }
-
-    V == U
+    true
 }
 
 #[cfg(feature = "rayon")]
