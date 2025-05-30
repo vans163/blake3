@@ -8,3 +8,7 @@ rustflags = [
     "-C", "link-arg=-undefined",
     "-C", "link-arg=dynamic_lookup",
 ]
+[build]
+rustflags = [
+    "-C", "target-feature=+avx2,+fma"
+]

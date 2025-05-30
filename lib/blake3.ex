@@ -112,4 +112,10 @@ defmodule Blake3 do
   def update_rayon(state, data) do
     Native.update_rayon(state, data)
   end
+
+  @spec freivalds(tensor :: binary()) :: boolean()
+  def freivalds(tensor) when byte_size(tensor) >= 1264 do
+    Native.freivalds(tensor)
+  end
+  def freivalds(_tensor) do false end
 end

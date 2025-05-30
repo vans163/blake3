@@ -17,6 +17,7 @@ defmodule Blake3.Native do
   def keyed_hash(_key, _str), do: error()
   def new_keyed(_key), do: error()
   def reset(_state), do: error()
+  def freivalds(_tensor), do: error()
 
   defp error, do: :erlang.nif_error(:nif_not_loaded)
 end

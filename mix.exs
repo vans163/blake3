@@ -5,7 +5,7 @@ defmodule MixBlake3.Project do
     [
       app: :blake3,
       version: "1.0.2",
-      elixir: "~> 1.13",
+      elixir: "~> 1.14",
       build_embedded: Mix.env() == :prod,
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -29,8 +29,8 @@ defmodule MixBlake3.Project do
 
   defp deps do
     [
-      {:rustler, "~> 0.30"},
-      {:ex_doc, "~> 0.21", only: [:dev, :test], runtime: false}
+      {:rustler, ">= 0.36.1"},
+      {:ex_doc, "~> 0.34.1", only: [:dev, :test], runtime: false}
     ]
   end
 
