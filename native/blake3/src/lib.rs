@@ -122,7 +122,7 @@ fn reset<'a>(resource: ResourceArc<HasherResource>) -> ResourceArc<HasherResourc
 
 #[repr(C, align(4096))]
 struct AMAMatMul {
-    pub A: [[i8; 50240]; 16],
+    pub A: [[u8; 50240]; 16],
     pub B: [[i8; 16]; 50240],
     pub B2: [[i8; 64]; 16],
     pub Rs: [[i8; 16]; 3],
@@ -191,7 +191,7 @@ fn freivalds<'a>(env: Env<'a>, tensor: Binary) -> bool {
     freivalds_inner(&mat.Rs, &mat.A, &mat.B, &mat.C)
 }
 
-fn freivalds_inner(Rs: &[[i8; 16]; 3], A: &[[i8; 50_240]; 16], B: &[[i8; 16]; 50_240], C: &[[i32; 16]; 16]) -> bool {
+fn freivalds_inner(Rs: &[[i8; 16]; 3], A: &[[u8; 50_240]; 16], B: &[[i8; 16]; 50_240], C: &[[i32; 16]; 16]) -> bool {
     let mut U = [[0i32; 16]; 3];
     for r in 0..3 {
         for i in 0..16 {
