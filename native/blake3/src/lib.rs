@@ -120,6 +120,12 @@ fn reset<'a>(resource: ResourceArc<HasherResource>) -> ResourceArc<HasherResourc
     resource
 }
 
+use std::{cell::RefCell, mem::{size_of, MaybeUninit}, ptr};
+use std::arch::x86_64::*;
+
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+compile_error!("freivalds requires AVX2; build with -C target-feature=+avx2");
+
 #[repr(C, align(4096))]
 struct AMAMatMul {
     pub A: [[u8; 50240]; 16],
@@ -129,69 +135,205 @@ struct AMAMatMul {
     pub C: [[i32; 16]; 16],
 }
 
-/*
-use std::time::Instant;
-
-#[rustler::nif]
-fn freivalds<'a>(env: Env<'a>, tensor: Binary) {
-    let mut uninit_array: Box<std::mem::MaybeUninit<[AMAMatMul; 1]>> = Box::new_uninit();
-    let ptr0: *mut AMAMatMul = uninit_array.as_mut_ptr() as *mut AMAMatMul;
-
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&tensor.as_slice()[..240]);
-    let mut xof = hasher.finalize_xof();
-    unsafe {
-        let buf = std::slice::from_raw_parts_mut(ptr0 as *mut u8, 16*50240 + 50240*16 + 16*64 + 16);
-        xof.fill(buf);
-    };
-
-    let data = tensor.as_slice();
-    let tail = &data[data.len() - 1024 ..];
-    unsafe {
-        let c_ptr = &mut (*ptr0).C as *mut [[i32;16];16] as *mut u8;
-        std::ptr::copy_nonoverlapping(tail.as_ptr(), c_ptr, 1024);
-    }
-    let struct_ama_matmul: Box<[AMAMatMul; 1]> = unsafe { uninit_array.assume_init() };
-
-
-    let mat = &struct_ama_matmul[0];
-    freivalds_inner(&mat.R, &mat.A, &mat.B, &mat.C);
-
-    //Ok(atoms::ok())
+thread_local! {
+    static SCRATCH: RefCell<Option<Box<AMAMatMul>>> = RefCell::new(None);
 }
-*/
+
+struct ScratchGuard {
+    buf: Option<Box<AMAMatMul>>,
+}
+
+impl std::ops::Deref for ScratchGuard {
+    type Target = AMAMatMul;
+    fn deref(&self) -> &Self::Target {
+        self.buf.as_ref().expect("buffer disappeared")
+    }
+}
+impl std::ops::DerefMut for ScratchGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.buf.as_mut().expect("buffer disappeared")
+    }
+}
+impl Drop for ScratchGuard {
+    fn drop(&mut self) {
+        if let Some(buf) = self.buf.take() {
+            SCRATCH.with(|tls| *tls.borrow_mut() = Some(buf));
+        }
+    }
+}
+
+/// Obtain the per‑thread scratch buffer, allocating it the first time.
+fn borrow_scratch() -> ScratchGuard {
+    SCRATCH.with(|tls| {
+        let mut slot = tls.borrow_mut();
+        let buf = slot.take().unwrap_or_else(|| {
+            // First time on this thread: allocate **uninitialised** memory.
+            let boxed_uninit: Box<MaybeUninit<AMAMatMul>> =
+                Box::new_uninit(); // ≈ zero cost for the OS here
+            // SAFETY: we promise to fully overwrite every byte before reading.
+            unsafe { boxed_uninit.assume_init() }
+        });
+        ScratchGuard { buf: Some(buf) }
+    })
+}
 
 #[rustler::nif]
 fn freivalds<'a>(env: Env<'a>, tensor: Binary) -> bool {
-    //1.5ms fix the page faults
-    let mut struct_ama_matmul = Box::new([AMAMatMul {
-        A: [[0; 50240]; 16],
-        B: [[0; 16]; 50240],
-        B2: [[0; 64]; 16],
-        Rs: [[0; 16]; 3],
-        C: [[0; 16]; 16],
-    }; 1]);
+    let mut scratch = borrow_scratch();
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(&tensor.as_slice()[..240]);
     let mut xof = hasher.finalize_xof();
-    unsafe {
-        let buf = std::slice::from_raw_parts_mut(&mut struct_ama_matmul[0] as *mut _ as *mut u8, 16*50240 + 50240*16 + 16*64 + 16*3);
-        xof.fill(buf);
-    };
 
-    let data = tensor.as_slice();
-    let tail = &data[data.len() - 1024 ..];
+    let head_bytes = 16 * 50_240         // A
+                   + 50_240 * 16         // B
+                   + 16 * 64             // B2
+                   + 3 * 16;             // Rs
+
     unsafe {
-        let dst = &mut struct_ama_matmul[0].C as *mut [[i32;16];16] as *mut u8;
-        std::ptr::copy_nonoverlapping(tail.as_ptr(), dst, 1024);
+        let dest = ptr::slice_from_raw_parts_mut(
+            (&mut scratch.A) as *mut _ as *mut u8,
+            head_bytes,
+        ) as *mut [u8];
+        xof.fill(&mut *dest);
     }
 
-    let mat = &struct_ama_matmul[0];
-    freivalds_inner(&mat.Rs, &mat.A, &mat.B, &mat.C)
+    let data = tensor.as_slice();
+    let tail = &data[data.len() - 1024..];
+    unsafe {
+        let dst = &mut scratch.C as *mut _ as *mut u8;
+        ptr::copy_nonoverlapping(tail.as_ptr(), dst, 1024);
+    }
+
+    unsafe {
+        freivalds_inner(&scratch.Rs, &scratch.A, &scratch.B, &scratch.C)
+    }
 }
 
-fn freivalds_inner(Rs: &[[i8; 16]; 3], A: &[[u8; 50_240]; 16], B: &[[i8; 16]; 50_240], C: &[[i32; 16]; 16]) -> bool {
+pub fn freivalds_inner(
+    Rs: &[[i8; 16]; 3],
+    A:  &[[u8; 50_240]; 16],
+    B:  &[[i8; 16]; 50_240],
+    C:  &[[i32; 16]; 16],
+) -> bool {
+    if std::is_x86_feature_detected!("avx2") {
+        unsafe { freivalds_inner_avx2(Rs, A, B, C) }
+    } else {
+        freivalds_inner_scalar(Rs, A, B, C)
+    }
+}
+
+#[inline(always)]
+unsafe fn hsum256_epi32(v: __m256i) -> i32 {
+    // Reduce 8 × i32 → scalar
+    let hi = _mm256_extracti128_si256(v, 1);
+    let lo = _mm256_castsi256_si128(v);
+    let sum128 = _mm_add_epi32(lo, hi);               // 4 lanes
+    let sum64  = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
+    let sum32  = _mm_add_epi32(sum64 , _mm_srli_si128(sum64 , 4));
+    _mm_cvtsi128_si32(sum32)
+}
+
+#[repr(C)]
+struct I32x16 {
+    lo: __m256i,
+    hi: __m256i,
+}
+
+/// Load 16 × i8 and sign‑extend to 16 × i32 (as two 256‑bit halves)
+#[inline(always)]
+unsafe fn load_i8x16_as_i32(ptr: *const i8) -> I32x16 {
+    // load 16 bytes
+    let v = _mm_loadu_si128(ptr as *const __m128i);
+    let lo = _mm256_cvtepi8_epi32(v);                // first 8
+    let hi = _mm256_cvtepi8_epi32(_mm_srli_si128(v, 8));
+    I32x16 { lo, hi }
+}
+
+pub unsafe fn freivalds_inner_avx2(
+    Rs: &[[i8; 16]; 3],
+    A: &[[u8; 50_240]; 16],
+    B: &[[i8; 16]; 50_240],
+    C: &[[i32; 16]; 16],
+) -> bool {
+    // the *body* is exactly what we previously had in `freivalds_inner_avx2`
+    // (helpers like `hsum256_epi32` go below, unchanged)
+    // ------------------------------------------------------------------ //
+    const N: usize = 50_240;
+    let mut U = [[0i32; 16]; 3];
+
+    // --- Stage 1: U = C × R --------------------------------------------------
+    let r0_i32 = load_i8x16_as_i32(Rs[0].as_ptr());
+    let r1_i32 = load_i8x16_as_i32(Rs[1].as_ptr());
+    let r2_i32 = load_i8x16_as_i32(Rs[2].as_ptr());
+
+    for i in 0..16 {
+        let c_lo = _mm256_loadu_si256(C[i].as_ptr() as *const __m256i);
+        let c_hi = _mm256_loadu_si256(C[i].as_ptr().add(8) as *const __m256i);
+
+        let u0 = _mm256_add_epi32(
+            _mm256_mullo_epi32(c_lo, r0_i32.lo),
+            _mm256_mullo_epi32(c_hi, r0_i32.hi),
+        );
+        let u1 = _mm256_add_epi32(
+            _mm256_mullo_epi32(c_lo, r1_i32.lo),
+            _mm256_mullo_epi32(c_hi, r1_i32.hi),
+        );
+        let u2 = _mm256_add_epi32(
+            _mm256_mullo_epi32(c_lo, r2_i32.lo),
+            _mm256_mullo_epi32(c_hi, r2_i32.hi),
+        );
+
+        U[0][i] = hsum256_epi32(u0);
+        U[1][i] = hsum256_epi32(u1);
+        U[2][i] = hsum256_epi32(u2);
+    }
+
+    // --- Stage 2: P(k) = B[k] · R -------------------------------------------
+    let mut P0 = vec![0i32; N];
+    let mut P1 = vec![0i32; N];
+    let mut P2 = vec![0i32; N];
+
+    let r0_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(Rs[0].as_ptr() as *const _));
+    let r1_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(Rs[1].as_ptr() as *const _));
+    let r2_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(Rs[2].as_ptr() as *const _));
+
+    for k in 0..N {
+        let row_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(B[k].as_ptr() as *const _));
+
+        P0[k] = hsum256_epi32(_mm256_madd_epi16(row_i16, r0_i16));
+        P1[k] = hsum256_epi32(_mm256_madd_epi16(row_i16, r1_i16));
+        P2[k] = hsum256_epi32(_mm256_madd_epi16(row_i16, r2_i16));
+    }
+
+    // --- Stage 3: dot( A[i], P ) --------------------------------------------
+    for i in 0..16 {
+        let mut acc0 = _mm256_setzero_si256();
+        let mut acc1 = _mm256_setzero_si256();
+        let mut acc2 = _mm256_setzero_si256();
+
+        for k in (0..N).step_by(8) {
+            let a_i32 = _mm256_cvtepu8_epi32(
+                _mm_loadl_epi64(A[i].as_ptr().add(k) as *const _));
+            let p0 = _mm256_loadu_si256(P0.as_ptr().add(k) as *const _);
+            let p1 = _mm256_loadu_si256(P1.as_ptr().add(k) as *const _);
+            let p2 = _mm256_loadu_si256(P2.as_ptr().add(k) as *const _);
+
+            acc0 = _mm256_add_epi32(acc0, _mm256_mullo_epi32(a_i32, p0));
+            acc1 = _mm256_add_epi32(acc1, _mm256_mullo_epi32(a_i32, p1));
+            acc2 = _mm256_add_epi32(acc2, _mm256_mullo_epi32(a_i32, p2));
+        }
+
+        if hsum256_epi32(acc0) != U[0][i]
+        || hsum256_epi32(acc1) != U[1][i]
+        || hsum256_epi32(acc2) != U[2][i] {
+            return false;
+        }
+    }
+    true
+}
+
+fn freivalds_inner_scalar(Rs: &[[i8; 16]; 3], A: &[[u8; 50_240]; 16], B: &[[i8; 16]; 50_240], C: &[[i32; 16]; 16]) -> bool {
     let mut U = [[0i32; 16]; 3];
     for r in 0..3 {
         for i in 0..16 {
