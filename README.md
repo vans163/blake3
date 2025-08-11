@@ -60,3 +60,7 @@ We follow Rustler itself, supporting latest three minor Elixir versions and majo
 As for Rust itself, we only support stable.
 
 Documentation can found at [https://hexdocs.pm/blake3](https://hexdocs.pm/blake3).
+
+<sub>
+Disclaimer: This is an open-source research project shared for educational and informational purposes only. All code, content, and related materials are provided “as is”, with no guarantees or warranties. This project is experimental, may change over time, and may contain errors. You use this code at your own risk. The contributors and maintainers are not responsible for any loss, damage, or legal issues resulting from its use. You are responsible for following all laws and regulations in your location. Use in or by sanctioned countries, individuals, or organizations, such as those restricted under U.S. export laws or OFAC rules, is strictly prohibited. We do not support or encourage the unlawful or unauthorized deployment of this code.
+</sub>
