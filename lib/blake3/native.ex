@@ -18,6 +18,7 @@ defmodule Blake3.Native do
   def new_keyed(_key), do: error()
   def reset(_state), do: error()
   def freivalds(_tensor), do: error()
+  def freivalds_e260(_tensor, _vr), do: error()
 
   defp error, do: :erlang.nif_error(:nif_not_loaded)
 end

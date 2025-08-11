@@ -120,7 +120,7 @@ fn reset<'a>(resource: ResourceArc<HasherResource>) -> ResourceArc<HasherResourc
     resource
 }
 
-use std::{cell::RefCell, mem::{size_of, MaybeUninit}, ptr};
+use std::{cell::RefCell, mem, mem::{size_of, MaybeUninit}, ptr, slice};
 use std::arch::x86_64::*;
 
 #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
@@ -203,6 +203,53 @@ fn freivalds<'a>(env: Env<'a>, tensor: Binary) -> bool {
     unsafe {
         let dst = &mut scratch.C as *mut _ as *mut u8;
         ptr::copy_nonoverlapping(tail.as_ptr(), dst, 1024);
+    }
+
+    unsafe {
+        freivalds_inner(&scratch.Rs, &scratch.A, &scratch.B, &scratch.C)
+    }
+}
+
+#[rustler::nif]
+fn freivalds_e260<'a>(env: Env<'a>, tensor: Binary, vr_b3: Binary) -> bool {
+    let mut scratch = borrow_scratch();
+
+    let tensor_slice = tensor.as_slice();
+    let head = &tensor_slice[..240];
+    let tail = &tensor_slice[tensor_slice.len() - 1024..];
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(head);
+    let mut xof = hasher.finalize_xof();
+
+    let ab_bytes = 16 * 50_240           // A
+                   + 50_240 * 16         // B
+                   + 16 * 64;            // B2
+
+    unsafe {
+        let dest = ptr::slice_from_raw_parts_mut(
+            (&mut scratch.A) as *mut _ as *mut u8,
+            ab_bytes,
+        ) as *mut [u8];
+        xof.fill(&mut *dest);
+    }
+
+    unsafe {
+        let dst = &mut scratch.C as *mut _ as *mut u8;
+        ptr::copy_nonoverlapping(tail.as_ptr(), dst, 1024);
+    }
+
+    //Take R from entire sol + VRF
+    let mut hasher_rs = blake3::Hasher::new();
+    hasher_rs.update(tensor_slice);
+    hasher_rs.update(vr_b3.as_slice());
+    let mut xof_rs = hasher_rs.finalize_xof();
+
+    unsafe {
+        let p = (&mut scratch.Rs) as *mut _ as *mut u8;
+        let n = mem::size_of_val(&scratch.Rs);
+        let dst = slice::from_raw_parts_mut(p, n);
+        xof_rs.fill(dst);
     }
 
     unsafe {

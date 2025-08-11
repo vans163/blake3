@@ -118,4 +118,10 @@ defmodule Blake3 do
     Native.freivalds(tensor)
   end
   def freivalds(_tensor) do false end
+
+  @spec freivalds_e260(tensor :: binary(), vr :: binary()) :: boolean()
+  def freivalds_e260(tensor, vr) when byte_size(tensor) >= 1264 do
+    Native.freivalds_e260(tensor, vr)
+  end
+  def freivalds_e260(_tensor, _vr) do false end
 end
