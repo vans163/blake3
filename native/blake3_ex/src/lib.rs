@@ -12,7 +12,7 @@ pub struct HasherResource(Mutex<blake3::Hasher>);
 
 rustler::init!("Elixir.Blake3.Native", load = on_load);
 fn on_load(env: Env, _info: Term) -> bool {
-    resource!(HasherResource, env);
+    let _ = resource!(HasherResource, env);
     true
 }
 
@@ -252,9 +252,7 @@ fn freivalds_e260<'a>(env: Env<'a>, tensor: Binary, vr_b3: Binary) -> bool {
         xof_rs.fill(dst);
     }
 
-    unsafe {
-        freivalds_inner(&scratch.Rs, &scratch.A, &scratch.B, &scratch.C)
-    }
+    freivalds_inner(&scratch.Rs, &scratch.A, &scratch.B, &scratch.C)
 }
 
 pub fn freivalds_inner(

@@ -1,3 +1,3 @@
 import Config
 
-config :blake3, Blake3.Native, features: ~w(rayon)
+config :blake3_ex, Blake3.Native, features: ~w(rayon)
